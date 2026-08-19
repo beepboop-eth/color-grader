@@ -217,6 +217,29 @@
 
 <div id="sidebar">
   <div class="group">
+    <h3>Film look / LUT <button class="mini" id="lutClearBtn">clear</button></h3>
+    <select id="lutSelect" style="width:100%; margin-bottom:8px;">
+      <option value="none">None</option>
+    </select>
+    <div style="display:flex; gap:6px; margin-bottom:8px;">
+      <button id="importLutBtn" style="flex:1;">Import LUT(s)…</button>
+      <button id="importLutFolderBtn" style="flex:1;">Import folder…</button>
+    </div>
+    <input type="file" id="lutFileInput" accept=".cube,.png" multiple hidden>
+    <input type="file" id="lutFolderInput" webkitdirectory hidden>
+    <div class="slider-row">
+      <label>Strength</label>
+      <input type="range" id="lutStrength" min="0" max="1" step="0.01" value="1">
+      <span class="val" id="lutStrengthVal">1.00</span>
+    </div>
+    <button id="removeLutBtn" style="display:none; width:100%; margin-bottom:6px;">Remove this imported LUT</button>
+    <div id="lutStatus" style="color:var(--muted); font-size:11px;"></div>
+    <p style="color:var(--muted); font-size:10px; margin-top:6px;">
+      Bundled film looks: <a href="https://rawpedia.rawtherapee.com/Film_Simulation" target="_blank" rel="noopener" style="color:var(--muted);">RawTherapee Film Simulation Collection</a> (CC BY-SA 4.0)
+    </p>
+  </div>
+
+  <div class="group">
     <h3>Basic <button class="mini" data-resetgroup="basic">reset</button></h3>
     <div class="slider-row">
       <label>Exposure</label>
@@ -281,7 +304,8 @@
 
 const DEFAULTS = {
   exposure: 0, contrast: 1, sat: 1, temp: 0, tint: 0,
-  lift: [0, 0], gamma: [0, 0], gain: [0, 0]   // wheel puck positions, x/y in [-1,1]
+  lift: [0, 0], gamma: [0, 0], gain: [0, 0],  // wheel puck positions, x/y in [-1,1]
+  lutStrength: 1
 };
 let state = JSON.parse(JSON.stringify(DEFAULTS));
 let bypass = false;
@@ -313,11 +337,29 @@ void main() {
 const FRAG = `
 precision highp float;
 uniform sampler2D u_tex;
+uniform sampler2D u_lut;
 uniform float u_exposure, u_contrast, u_sat, u_temp, u_tint, u_bypass;
+uniform float u_hasLut, u_lutStrength;
 uniform vec3 u_lift, u_gamma, u_gain;
 varying vec2 v_uv;
 
+const float LS = 33.0; // internal LUT lattice size, packed as 33 slices of 33x33
+
+vec3 applyLut(vec3 c) {
+  float b = c.b * (LS - 1.0);
+  float b0 = floor(b);
+  float bf = b - b0;
+  float b1 = min(b0 + 1.0, LS - 1.0);
+  float y = (c.g * (LS - 1.0) + 0.5) / LS;
+  float x0 = (b0 * LS + c.r * (LS - 1.0) + 0.5) / (LS * LS);
+  float x1 = (b1 * LS + c.r * (LS - 1.0) + 0.5) / (LS * LS);
+  return mix(texture2D(u_lut, vec2(x0, y)).rgb, texture2D(u_lut, vec2(x1, y)).rgb, bf);
+}
+
 vec3 grade(vec3 c) {
+  // base film look / imported LUT, applied before manual adjustments
+  if (u_hasLut > 0.5)
+    c = mix(c, applyLut(clamp(c, 0.0, 1.0)), u_lutStrength);
   // white balance
   c.r *= 1.0 + u_temp * 0.25;
   c.b *= 1.0 - u_temp * 0.25;
@@ -367,8 +409,10 @@ gl.enableVertexAttribArray(aPos);
 gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
 const U = {};
-for (const name of ["u_exposure","u_contrast","u_sat","u_temp","u_tint","u_bypass","u_lift","u_gamma","u_gain"])
+for (const name of ["u_exposure","u_contrast","u_sat","u_temp","u_tint","u_bypass","u_lift","u_gamma","u_gain","u_hasLut","u_lutStrength"])
   U[name] = gl.getUniformLocation(prog, name);
+gl.uniform1i(gl.getUniformLocation(prog, "u_tex"), 0);
+gl.uniform1i(gl.getUniformLocation(prog, "u_lut"), 1);
 
 const tex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -377,6 +421,170 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+/* ---------------- LUT engine ----------------
+   Internal representation: every LUT (any .cube size, any HaldCLUT level) is
+   resampled to a 33^3 lattice of 8-bit RGB. The same Uint8Array feeds both the
+   GPU texture (preview) and the JS sampler (export), so they cannot drift. */
+
+const LS = 33;
+const BUNDLED_LUTS = [
+  { id: "portra-400",   label: "Portra 400 — soft skin tones (day)" },
+  { id: "ektar-100",    label: "Ektar 100 — punchy landscape (day)" },
+  { id: "provia-100f",  label: "Provia 100F — clean & balanced" },
+  { id: "velvia-50",    label: "Velvia 50 — vivid scenery" },
+  { id: "portra-800",   label: "Portra 800 — low light skin (night)" },
+  { id: "superia-1600", label: "Superia 1600 — night / concert" },
+  { id: "xpro-slide",   label: "X-Pro Slide — cross-processed punch" },
+  { id: "hp5-bw",       label: "HP5 — black & white" },
+];
+let currentLut = null; // { value, label, data: Uint8Array(33^3*3) }
+
+const lutTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE1);
+gl.bindTexture(gl.TEXTURE_2D, lutTex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.activeTexture(gl.TEXTURE0);
+
+function packLutForTexture(u8) {
+  // canonical order is [b][g][r] (cube order); texture wants texel (r,g,b)
+  // at x = b*33 + r, y = g, i.e. linear index (g*33*33 + b*33 + r)
+  const out = new Uint8Array(u8.length);
+  for (let b = 0; b < LS; b++)
+    for (let g = 0; g < LS; g++)
+      for (let r = 0; r < LS; r++) {
+        const src = ((b * LS + g) * LS + r) * 3;
+        const dst = (g * LS * LS + b * LS + r) * 3;
+        out[dst] = u8[src]; out[dst + 1] = u8[src + 1]; out[dst + 2] = u8[src + 2];
+      }
+  return out;
+}
+
+function uploadLutTexture(u8) {
+  // 33 slices side by side: width 33*33, height 33; texel (r,g,b) at x=b*33+r, y=g
+  u8 = packLutForTexture(u8);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, lutTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, LS * LS, LS, 0, gl.RGB, gl.UNSIGNED_BYTE, u8);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.activeTexture(gl.TEXTURE0);
+}
+
+function parseCubeText(text) {
+  let size = 0;
+  const data = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || /^(TITLE|DOMAIN_MIN|DOMAIN_MAX)/i.test(line)) continue;
+    if (/^LUT_1D_SIZE/i.test(line)) throw new Error("1D LUTs are not supported — need a 3D LUT");
+    const m = line.match(/^LUT_3D_SIZE\s+(\d+)/i);
+    if (m) { size = parseInt(m[1], 10); continue; }
+    const parts = line.split(/\s+/).map(Number);
+    if (parts.length === 3 && parts.every(Number.isFinite)) data.push(...parts);
+  }
+  if (!size || data.length !== size * size * size * 3)
+    throw new Error("not a valid .cube file");
+  return { size, data: Float32Array.from(data) };
+}
+
+function haldFromImage(img) {
+  const w = img.width;
+  const level = Math.round(Math.cbrt(w));
+  if (img.height !== w || level * level * level !== w)
+    throw new Error("not a HaldCLUT image (must be square, side = level^3)");
+  const size = level * level;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = w;
+  const x = c.getContext("2d", { willReadFrequently: true });
+  x.drawImage(img, 0, 0);
+  const px = x.getImageData(0, 0, w, w).data;
+  const data = new Float32Array(size * size * size * 3);
+  for (let i = 0; i < size * size * size; i++) {
+    data[i * 3]     = px[i * 4] / 255;
+    data[i * 3 + 1] = px[i * 4 + 1] / 255;
+    data[i * 3 + 2] = px[i * 4 + 2] / 255;
+  }
+  return { size, data }; // red fastest, then green, then blue — same as .cube
+}
+
+function trilinear(data, N, r, g, b) {
+  const cl = v => Math.min(N - 1, Math.max(0, v));
+  const rf = cl(r * (N - 1)), gf = cl(g * (N - 1)), bf = cl(b * (N - 1));
+  const r0 = Math.floor(rf), g0 = Math.floor(gf), b0 = Math.floor(bf);
+  const r1 = Math.min(r0 + 1, N - 1), g1 = Math.min(g0 + 1, N - 1), b1 = Math.min(b0 + 1, N - 1);
+  const fr = rf - r0, fg = gf - g0, fb = bf - b0;
+  const at = (ri, gi, bi, ch) => data[((bi * N + gi) * N + ri) * 3 + ch];
+  const out = [0, 0, 0];
+  for (let ch = 0; ch < 3; ch++) {
+    const c00 = at(r0, g0, b0, ch) * (1 - fr) + at(r1, g0, b0, ch) * fr;
+    const c10 = at(r0, g1, b0, ch) * (1 - fr) + at(r1, g1, b0, ch) * fr;
+    const c01 = at(r0, g0, b1, ch) * (1 - fr) + at(r1, g0, b1, ch) * fr;
+    const c11 = at(r0, g1, b1, ch) * (1 - fr) + at(r1, g1, b1, ch) * fr;
+    out[ch] = (c00 * (1 - fg) + c10 * fg) * (1 - fb) + (c01 * (1 - fg) + c11 * fg) * fb;
+  }
+  return out;
+}
+
+function resampleTo33(lut) {
+  const u8 = new Uint8Array(LS * LS * LS * 3);
+  const n = LS - 1;
+  let i = 0;
+  for (let b = 0; b < LS; b++)
+    for (let g = 0; g < LS; g++)
+      for (let r = 0; r < LS; r++) {
+        const v = trilinear(lut.data, lut.size, r / n, g / n, b / n);
+        u8[i++] = Math.round(Math.min(1, Math.max(0, v[0])) * 255);
+        u8[i++] = Math.round(Math.min(1, Math.max(0, v[1])) * 255);
+        u8[i++] = Math.round(Math.min(1, Math.max(0, v[2])) * 255);
+      }
+  return u8;
+}
+
+// JS mirror of the shader's applyLut (trilinear over the same 33^3 8-bit data)
+function sampleLut33(u8, c) {
+  const v = trilinear(u8, LS, c[0], c[1], c[2]);
+  return [v[0] / 255, v[1] / 255, v[2] / 255];
+}
+
+/* imported-LUT persistence (IndexedDB) */
+function lutDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("lutbuilder", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("luts", { keyPath: "key" });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbPutLut(rec) {
+  const db = await lutDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("luts", "readwrite");
+    tx.objectStore("luts").put(rec);
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+  });
+}
+async function idbAllLuts() {
+  const db = await lutDb();
+  return new Promise((res, rej) => {
+    const req = db.transaction("luts").objectStore("luts").getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function idbDeleteLut(key) {
+  const db = await lutDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("luts", "readwrite");
+    tx.objectStore("luts").delete(key);
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+  });
+}
 
 /* ---------------- source media ---------------- */
 
@@ -480,6 +688,8 @@ function renderNow() {
   gl.uniform1f(U.u_temp, state.temp);
   gl.uniform1f(U.u_tint, state.tint);
   gl.uniform1f(U.u_bypass, bypass ? 1 : 0);
+  gl.uniform1f(U.u_hasLut, currentLut ? 1 : 0);
+  gl.uniform1f(U.u_lutStrength, state.lutStrength);
   gl.uniform3fv(U.u_lift, wheelOffset(state.lift, WHEEL_SCALE.lift));
   gl.uniform3fv(U.u_gamma, wheelOffset(state.gamma, WHEEL_SCALE.gamma));
   gl.uniform3fv(U.u_gain, wheelOffset(state.gain, WHEEL_SCALE.gain));
@@ -523,6 +733,12 @@ function gradeJS(r, g, b) {
   const gamma = wheelOffset(state.gamma, WHEEL_SCALE.gamma);
   const gain = wheelOffset(state.gain, WHEEL_SCALE.gain);
   let c = [r, g, b];
+  // base film look / imported LUT
+  if (currentLut && state.lutStrength > 0) {
+    const cc = c.map(v => Math.min(1, Math.max(0, v)));
+    const lv = sampleLut33(currentLut.data, cc);
+    c = c.map((v, i) => v + (lv[i] - v) * state.lutStrength);
+  }
   // white balance
   c[0] *= 1 + state.temp * 0.25;
   c[2] *= 1 - state.temp * 0.25;
@@ -584,6 +800,8 @@ function syncUI() {
     document.getElementById(id).value = state[id];
     document.getElementById(id + "Val").textContent = Number(state[id]).toFixed(2);
   }
+  document.getElementById("lutStrength").value = state.lutStrength;
+  document.getElementById("lutStrengthVal").textContent = Number(state.lutStrength).toFixed(2);
   for (const w of ["lift", "gamma", "gain"]) positionPuck(w);
 }
 
@@ -605,6 +823,8 @@ document.querySelectorAll("[data-resetgroup]").forEach(btn => {
 
 document.getElementById("resetBtn").addEventListener("click", () => {
   state = JSON.parse(JSON.stringify(DEFAULTS));
+  lutSelect.value = "none";
+  setLut(null);
   syncUI(); requestRender();
 });
 
@@ -644,6 +864,137 @@ document.querySelectorAll(".wreset").forEach(btn => {
     positionPuck(btn.dataset.wheel);
     requestRender();
   });
+});
+
+/* film look / LUT UI */
+const lutSelect = document.getElementById("lutSelect");
+const lutStatus = document.getElementById("lutStatus");
+const removeLutBtn = document.getElementById("removeLutBtn");
+const bundledCache = new Map();
+
+function rebuildLutSelect(importedRecs) {
+  lutSelect.innerHTML = "<option value='none'>None</option>";
+  const gb = document.createElement("optgroup");
+  gb.label = "Film looks (bundled)";
+  for (const l of BUNDLED_LUTS) {
+    const o = document.createElement("option");
+    o.value = "b:" + l.id; o.textContent = l.label;
+    gb.appendChild(o);
+  }
+  lutSelect.appendChild(gb);
+  if (importedRecs.length) {
+    const gi = document.createElement("optgroup");
+    gi.label = "Imported";
+    for (const rec of importedRecs.sort((a, b) => a.label.localeCompare(b.label))) {
+      const o = document.createElement("option");
+      o.value = "i:" + rec.key; o.textContent = rec.label;
+      gi.appendChild(o);
+    }
+    lutSelect.appendChild(gi);
+  }
+}
+
+function setLut(lut) {
+  currentLut = lut;
+  if (lut) uploadLutTexture(lut.data);
+  removeLutBtn.style.display = lut && lut.value.startsWith("i:") ? "block" : "none";
+  lutStatus.textContent = lut ? "Active: " + lut.label : "";
+  requestRender();
+}
+
+function loadImageEl(src) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error("could not load image"));
+    img.src = src;
+  });
+}
+
+async function activateLutValue(value) {
+  if (value === "none") { setLut(null); return; }
+  lutStatus.textContent = "Loading…";
+  try {
+    if (value.startsWith("b:")) {
+      const id = value.slice(2);
+      const meta = BUNDLED_LUTS.find(l => l.id === id);
+      if (!bundledCache.has(id)) {
+        const img = await loadImageEl("luts/" + id + ".png");
+        bundledCache.set(id, resampleTo33(haldFromImage(img)));
+      }
+      setLut({ value, label: meta.label, data: bundledCache.get(id) });
+    } else if (value.startsWith("i:")) {
+      const recs = await idbAllLuts();
+      const rec = recs.find(r => r.key === value.slice(2));
+      if (!rec) throw new Error("imported LUT not found in browser storage");
+      setLut({ value, label: rec.label, data: rec.data });
+    }
+  } catch (err) {
+    lutStatus.textContent = "Could not load: " + err.message +
+      (location.protocol === "file:" && value.startsWith("b:")
+        ? " (bundled looks need the hosted version — imports still work)" : "");
+    lutSelect.value = "none";
+    setLut(null);
+  }
+}
+
+lutSelect.addEventListener("change", () => activateLutValue(lutSelect.value));
+document.getElementById("lutClearBtn").addEventListener("click", () => {
+  lutSelect.value = "none";
+  setLut(null);
+});
+
+document.getElementById("lutStrength").addEventListener("input", e => {
+  state.lutStrength = parseFloat(e.target.value);
+  document.getElementById("lutStrengthVal").textContent = state.lutStrength.toFixed(2);
+  requestRender();
+});
+
+async function importLutFiles(files) {
+  const usable = [...files].filter(f => /\.(cube|png)$/i.test(f.name));
+  if (!usable.length) { lutStatus.textContent = "No .cube or HaldCLUT .png files found."; return; }
+  let lastValue = null, ok = 0, failed = [];
+  for (const file of usable) {
+    try {
+      let lut;
+      if (/\.cube$/i.test(file.name)) {
+        lut = parseCubeText(await file.text());
+      } else {
+        const url = URL.createObjectURL(file);
+        try { lut = haldFromImage(await loadImageEl(url)); }
+        finally { URL.revokeObjectURL(url); }
+      }
+      const label = file.name.replace(/\.(cube|png)$/i, "");
+      const key = label.toLowerCase().replace(/[^\w\-]+/g, "-");
+      await idbPutLut({ key, label, data: resampleTo33(lut) });
+      lastValue = "i:" + key; ok++;
+    } catch (err) {
+      failed.push(file.name + " (" + err.message + ")");
+    }
+  }
+  rebuildLutSelect(await idbAllLuts());
+  if (lastValue) {
+    lutSelect.value = lastValue;
+    await activateLutValue(lastValue);
+  }
+  lutStatus.textContent =
+    (currentLut ? "Active: " + currentLut.label + " — " : "") +
+    ok + " imported" + (failed.length ? ", skipped: " + failed.join("; ") : "");
+}
+
+document.getElementById("importLutBtn").addEventListener("click", () =>
+  document.getElementById("lutFileInput").click());
+document.getElementById("importLutFolderBtn").addEventListener("click", () =>
+  document.getElementById("lutFolderInput").click());
+document.getElementById("lutFileInput").addEventListener("change", e => importLutFiles(e.target.files));
+document.getElementById("lutFolderInput").addEventListener("change", e => importLutFiles(e.target.files));
+
+removeLutBtn.addEventListener("click", async () => {
+  if (!currentLut || !currentLut.value.startsWith("i:")) return;
+  await idbDeleteLut(currentLut.value.slice(2));
+  rebuildLutSelect(await idbAllLuts());
+  lutSelect.value = "none";
+  setLut(null);
 });
 
 /* before/after */
@@ -747,16 +1098,20 @@ function refreshPresetList() {
 document.getElementById("saveLookBtn").addEventListener("click", () => {
   const name = (document.getElementById("lookName").value || "My Look").trim();
   const looks = loadLooks();
-  looks[name] = state;
+  looks[name] = { ...state, lutValue: currentLut ? currentLut.value : "none" };
   localStorage.setItem(LS_KEY, JSON.stringify(looks));
   refreshPresetList();
   presetSelect.value = name;
 });
-presetSelect.addEventListener("change", () => {
+presetSelect.addEventListener("change", async () => {
   const looks = loadLooks();
-  if (looks[presetSelect.value]) {
-    state = JSON.parse(JSON.stringify(looks[presetSelect.value]));
+  const look = looks[presetSelect.value];
+  if (look) {
+    const { lutValue, ...rest } = look;
+    state = { ...JSON.parse(JSON.stringify(DEFAULTS)), ...JSON.parse(JSON.stringify(rest)) };
     document.getElementById("lookName").value = presetSelect.value;
+    lutSelect.value = lutValue || "none";
+    await activateLutValue(lutValue || "none");
     syncUI(); requestRender();
   }
 });
@@ -792,6 +1147,7 @@ window.__selfTest = function () {
 setSource(makeTestImage(), false);
 syncUI();
 refreshPresetList();
+idbAllLuts().then(rebuildLutSelect).catch(() => rebuildLutSelect([]));
 </script>
 </body>
 </html>
