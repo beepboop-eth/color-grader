@@ -621,12 +621,50 @@ video.playsInline = true;
    positions only remember the latest target. Firing seeks as fast as the
    slider moves stacks decode work and crashes mobile browsers on big clips. */
 let seekBusy = false, seekPending = null, videoTexDirty = true;
+let seekWatchdog = 0, framePoke = 0;
+
+function nudgePlay() {
+  const p = video.play();
+  if (p && p.catch) p.catch(() => {});
+}
+
 function requestSeek(t) {
   if (seekBusy) { seekPending = t; return; }
   seekBusy = true;
   video.currentTime = t;
+  // watchdog: iOS Safari can stall a seek on a paused video — nudge the
+  // decoder with a brief play, and never let a dead seek jam the queue
+  clearTimeout(seekWatchdog);
+  seekWatchdog = setTimeout(() => {
+    if (!seekBusy) return;
+    nudgePlay();
+    setTimeout(() => {
+      if (!seekBusy) return;
+      seekBusy = false;
+      if (seekPending !== null) { const q = seekPending; seekPending = null; requestSeek(q); }
+    }, 1200);
+  }, 1200);
 }
+
+// after a seek reports done, confirm a new frame was actually PRESENTED —
+// iOS Safari fires 'seeked' while still displaying the old frame on paused
+// video, so we wait for a real frame (nudging playback if none comes) before
+// trusting the texture
+function ensureFramePresented() {
+  if (!video.requestVideoFrameCallback) return;
+  let presented = false;
+  video.requestVideoFrameCallback(() => {
+    presented = true;
+    videoTexDirty = true;
+    requestRender();
+    if (!video.paused) video.pause();
+  });
+  clearTimeout(framePoke);
+  framePoke = setTimeout(() => { if (!presented && video.paused) nudgePlay(); }, 250);
+}
+
 video.addEventListener("seeked", () => {
+  clearTimeout(seekWatchdog);
   seekBusy = false;
   videoTexDirty = true;
   if (seekPending !== null) {
@@ -636,6 +674,7 @@ video.addEventListener("seeked", () => {
   }
   updateVideoTime();
   requestRender();
+  ensureFramePresented();
 });
 
 function makeTestImage() {
