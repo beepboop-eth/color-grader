@@ -617,6 +617,27 @@ const video = document.createElement("video");
 video.muted = true;
 video.playsInline = true;
 
+/* Seeks are serialized: while the decoder works on one seek, further scrub
+   positions only remember the latest target. Firing seeks as fast as the
+   slider moves stacks decode work and crashes mobile browsers on big clips. */
+let seekBusy = false, seekPending = null, videoTexDirty = true;
+function requestSeek(t) {
+  if (seekBusy) { seekPending = t; return; }
+  seekBusy = true;
+  video.currentTime = t;
+}
+video.addEventListener("seeked", () => {
+  seekBusy = false;
+  videoTexDirty = true;
+  if (seekPending !== null) {
+    const t = seekPending;
+    seekPending = null;
+    requestSeek(t);
+  }
+  updateVideoTime();
+  requestRender();
+});
+
 function makeTestImage() {
   const c = document.createElement("canvas");
   c.width = 1280; c.height = 720;
@@ -678,7 +699,7 @@ function setSource(src, isVideo) {
 
 function uploadTexture() {
   if (!source) return;
-  if (sourceIsVideo && video.readyState < 2) return;
+  if (sourceIsVideo && video.readyState < 2) return; // stays dirty, retried later
   gl.bindTexture(gl.TEXTURE_2D, tex);
   if (srcScale < 1) {
     scaleCtx.drawImage(source, 0, 0, scaleCanvas.width, scaleCanvas.height);
@@ -686,6 +707,7 @@ function uploadTexture() {
   } else {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
   }
+  videoTexDirty = false;
 }
 
 /* ---------------- rendering ---------------- */
@@ -720,7 +742,9 @@ function hueToRgb(deg) {
 function renderNow() {
   if (!source) return;
   if (sourceIsVideo) {
-    uploadTexture();
+    // only re-upload the frame when it actually changed (load/seek) — sliders
+    // re-run the shader on the existing texture, which is cheap at any resolution
+    if (videoTexDirty) uploadTexture();
     // first frame may not be decoded yet — keep re-rendering until it is,
     // otherwise the previous texture (e.g. the test image) stays on screen
     if (video.readyState < 2 && !video.error) requestAnimationFrame(requestRender);
@@ -737,7 +761,21 @@ function renderNow() {
   gl.uniform3fv(U.u_gamma, wheelOffset(state.gamma, WHEEL_SCALE.gamma));
   gl.uniform3fv(U.u_gain, wheelOffset(state.gain, WHEEL_SCALE.gain));
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  drawWaveform();
+  scheduleWaveform();
+}
+
+// the waveform needs a GPU->CPU readback — throttle it during rapid renders
+// (slider drags), with a trailing update so it always settles on the final state
+let lastWave = 0, waveTrailing = 0;
+function scheduleWaveform() {
+  const now = performance.now();
+  if (now - lastWave >= 120) {
+    lastWave = now;
+    drawWaveform();
+  } else {
+    clearTimeout(waveTrailing);
+    waveTrailing = setTimeout(() => { lastWave = performance.now(); drawWaveform(); }, 130);
+  }
 }
 
 /* ---------------- waveform ---------------- */
@@ -1265,11 +1303,13 @@ function loadFile(file) {
       videoScrub.max = video.duration || 100;
       videoScrub.value = 0;
       updateVideoTime();
+      videoTexDirty = true;
       setSource(video, true);
-      video.currentTime = 0.01; // nudge-seek so the first frame actually decodes
+      requestSeek(0.01); // nudge-seek so the first frame actually decodes
     };
     video.addEventListener("error", onFail, { once: true });
-    video.preload = "auto";
+    video.preload = "metadata"; // never buffer a whole multi-GB clip
+    seekBusy = false; seekPending = null;
     video.src = url;
     video.load();
     // Mobile browsers (esp. iOS Safari) don't decode any frame until playback
@@ -1283,7 +1323,6 @@ function loadFile(file) {
       video.addEventListener("loadeddata", onOk, { once: true });
     }
     setTimeout(() => { if (!settled && !video.videoWidth) onFail(); }, 12000);  // nothing at all after 12s
-    video.addEventListener("seeked", () => { updateVideoTime(); requestRender(); });
   } else {
     videoBar.style.display = "none";
     const img = new Image();
@@ -1300,14 +1339,16 @@ function fmtTime(s) {
 function updateVideoTime() {
   videoTime.textContent = fmtTime(video.currentTime) + " / " + fmtTime(video.duration);
 }
-videoScrub.addEventListener("input", () => { video.currentTime = parseFloat(videoScrub.value); });
+videoScrub.addEventListener("input", () => { requestSeek(parseFloat(videoScrub.value)); });
 document.getElementById("stepBack").addEventListener("click", () => {
-  video.currentTime = Math.max(0, video.currentTime - 1);
-  videoScrub.value = video.currentTime;
+  const t = Math.max(0, video.currentTime - 1);
+  requestSeek(t);
+  videoScrub.value = t;
 });
 document.getElementById("stepFwd").addEventListener("click", () => {
-  video.currentTime = Math.min(video.duration, video.currentTime + 1);
-  videoScrub.value = video.currentTime;
+  const t = Math.min(video.duration, video.currentTime + 1);
+  requestSeek(t);
+  videoScrub.value = t;
 });
 
 /* ---------------- saved looks (localStorage) ---------------- */
