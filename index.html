@@ -101,8 +101,12 @@
     border-top: 1px solid var(--border);
     padding: 8px 16px 12px;
   }
-  #waveWrap .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
-  #waveform { width: 100%; height: 110px; display: block; background: #101216; border-radius: 4px; }
+  #waveWrap .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; }
+  #waveWrap .label .spacer { flex: 1; }
+  #clipInfo { text-transform: none; letter-spacing: 0; font-size: 11px; }
+  #autoBtn { font-size: 11px; padding: 3px 10px; }
+  #waveform { width: 100%; height: 110px; display: block; background: #101216; border-radius: 4px; cursor: pointer; transition: height .15s ease; }
+  #waveWrap.expanded #waveform { height: 260px; }
 
   #sidebar {
     width: 300px; flex-shrink: 0;
@@ -210,7 +214,12 @@
   </div>
 
   <div id="waveWrap">
-    <div class="label">Waveform (brightness across the image — left to right)</div>
+    <div class="label">
+      <span>Waveform — click to enlarge</span>
+      <span class="spacer"></span>
+      <span id="clipInfo"></span>
+      <button id="autoBtn" title="Set exposure, contrast and white balance so the image fills the waveform without clipping">Auto balance</button>
+    </div>
     <canvas id="waveform"></canvas>
   </div>
 </div>
@@ -705,8 +714,10 @@ const sampleCanvas = document.createElement("canvas");
 sampleCanvas.width = 240; sampleCanvas.height = 135;
 const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
 
+const clipInfo = document.getElementById("clipInfo");
+
 function drawWaveform() {
-  const W = waveCanvas.clientWidth, H = 110;
+  const W = waveCanvas.clientWidth, H = waveCanvas.clientHeight || 110;
   if (waveCanvas.width !== W) waveCanvas.width = W;
   if (waveCanvas.height !== H) waveCanvas.height = H;
   if (!W) return;
@@ -716,15 +727,101 @@ function drawWaveform() {
   waveCtx.fillRect(0, 0, W, H);
   waveCtx.fillStyle = "rgba(120,220,140,0.16)";
   const sw = sampleCanvas.width, sh = sampleCanvas.height;
+  let clippedHi = 0, crushedLo = 0;
   for (let x = 0; x < sw; x++) {
     const px = x / sw * W;
     for (let y = 0; y < sh; y++) {
       const i = (y * sw + x) * 4;
-      const luma = 0.2126 * data[i] + 0.7152 * data[i+1] + 0.0722 * data[i+2];
+      const r = data[i], g = data[i+1], b = data[i+2];
+      if (r >= 254 || g >= 254 || b >= 254) clippedHi++;
+      if (r <= 1 && g <= 1 && b <= 1) crushedLo++;
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       waveCtx.fillRect(px, (1 - luma / 255) * (H - 2), Math.max(1, W / sw), 2);
     }
   }
+  // guides: 100% (white clip) and 0% (black clip)
+  waveCtx.strokeStyle = "rgba(255,255,255,0.35)";
+  waveCtx.setLineDash([4, 4]);
+  waveCtx.beginPath();
+  waveCtx.moveTo(0, 1.5); waveCtx.lineTo(W, 1.5);
+  waveCtx.moveTo(0, H - 1.5); waveCtx.lineTo(W, H - 1.5);
+  waveCtx.stroke();
+  waveCtx.setLineDash([]);
+  waveCtx.fillStyle = "rgba(255,255,255,0.5)";
+  waveCtx.font = "9px sans-serif";
+  waveCtx.fillText("100", 4, 11);
+  waveCtx.fillText("0", 4, H - 5);
+  // clip warnings (ignore tiny amounts)
+  const total = sw * sh;
+  const hiPct = clippedHi / total * 100, loPct = crushedLo / total * 100;
+  const parts = [];
+  if (hiPct >= 0.5) parts.push(`<span style="color:#ff9d5c">▲ ${hiPct.toFixed(1)}% blown highlights</span>`);
+  if (loPct >= 0.5) parts.push(`<span style="color:#7aa7ff">▼ ${loPct.toFixed(1)}% crushed shadows</span>`);
+  clipInfo.innerHTML = parts.join(" · ");
 }
+
+document.getElementById("waveform").addEventListener("click", () => {
+  document.getElementById("waveWrap").classList.toggle("expanded");
+  requestRender();
+});
+
+/* ---------------- auto balance ----------------
+   Reads the source (with the active LUT applied), then sets white balance,
+   exposure and contrast so shadows land near 0 and highlights near 100
+   without clipping. Wheels and saturation are left untouched. */
+
+function autoBalance() {
+  if (!source) return;
+  sampleCtx.drawImage(sourceIsVideo ? video : source, 0, 0, sampleCanvas.width, sampleCanvas.height);
+  const px = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data;
+  const n = px.length / 4;
+  const cols = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    let c = [px[i*4] / 255, px[i*4+1] / 255, px[i*4+2] / 255];
+    if (currentLut && state.lutStrength > 0) {
+      const lv = sampleLut33(currentLut.data, c);
+      c = c.map((v, k) => v + (lv[k] - v) * state.lutStrength);
+    }
+    cols[i*3] = c[0]; cols[i*3+1] = c[1]; cols[i*3+2] = c[2];
+  }
+  const luma = i => 0.2126 * cols[i*3] + 0.7152 * cols[i*3+1] + 0.0722 * cols[i*3+2];
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => luma(a) - luma(b));
+
+  // white balance from the brightest 5% (should be neutral-ish); apply gently
+  let r = 0, g = 0, b = 0, cnt = 0;
+  for (let k = Math.floor(n * 0.95); k < n; k++) {
+    const i = order[k];
+    r += cols[i*3]; g += cols[i*3+1]; b += cols[i*3+2]; cnt++;
+  }
+  r /= cnt; g /= cnt; b /= cnt;
+  const SOFTEN = 0.6;
+  let temp = 0, tint = 0;
+  if (r + b > 0.05) temp = Math.max(-1, Math.min(1, (b - r) / (0.25 * (r + b)) * SOFTEN));
+  const r2 = r * (1 + temp * 0.25), b2 = b * (1 - temp * 0.25);
+  if (g > 0.05) tint = Math.max(-1, Math.min(1, ((r2 + b2) / 2 - g) / (0.20 * g) * SOFTEN));
+
+  // percentiles of white-balanced luma
+  const wbLuma = i => 0.2126 * cols[i*3] * (1 + temp * 0.25)
+                    + 0.7152 * cols[i*3+1] * (1 + tint * 0.20)
+                    + 0.0722 * cols[i*3+2] * (1 - temp * 0.25);
+  const pLo = wbLuma(order[Math.floor(n * 0.01)]);
+  const pHi = wbLuma(order[Math.floor(n * 0.99)]);
+  const d = Math.max(pHi - pLo, 0.01);
+
+  // solve exposure E and contrast k so that after c*E then (c-0.5)*k+0.5,
+  // pLo lands at 0.02 and pHi at 0.97 (see pipeline order in grade())
+  const E = 0.5 / Math.max(pLo + 0.5053 * d, 0.02);
+  const k = 0.95 / (E * d);
+
+  state.temp = Math.round(temp * 100) / 100;
+  state.tint = Math.round(tint * 100) / 100;
+  state.exposure = Math.round(Math.max(-2, Math.min(2, Math.log2(E))) * 100) / 100;
+  state.contrast = Math.round(Math.max(0.4, Math.min(1.8, k)) * 100) / 100;
+  syncUI();
+  requestRender();
+}
+
+document.getElementById("autoBtn").addEventListener("click", autoBalance);
 
 /* ---------------- the same grade in JS (for .cube export) ---------------- */
 
