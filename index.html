@@ -37,6 +37,9 @@
     background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px;
     padding: 6px 12px; font: inherit; cursor: pointer;
+    touch-action: manipulation;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
   }
   button:hover { border-color: var(--muted); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
@@ -130,6 +133,8 @@
     border-radius: 50%;
     position: relative;
     cursor: crosshair;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
     border: 1px solid var(--border);
     background:
       radial-gradient(circle, rgba(140,140,140,.9) 0%, rgba(140,140,140,0) 72%),
@@ -146,6 +151,33 @@
     box-shadow: 0 1px 3px rgba(0,0,0,.6);
   }
   .wheel-block .wreset { margin-top: 6px; font-size: 10px; padding: 2px 8px; }
+
+  /* phones / narrow screens: stack vertically and let the page scroll */
+  @media (max-width: 760px) {
+    body {
+      flex-direction: column;
+      overflow-y: auto;
+      height: auto;
+      min-height: 100%;
+    }
+    #main { flex: none; }
+    #toolbar { padding: 8px 10px; gap: 6px; }
+    #toolbar .title { flex-basis: 100%; }
+    #toolbar input[type="text"] { width: 110px; flex: 1; }
+    #viewer { padding: 10px; flex-direction: column; gap: 4px; }
+    #gl { max-height: 45vh; }
+    #hint { position: static; margin-top: 8px; }
+    #waveWrap { padding: 8px 10px 10px; }
+    #waveform { height: 70px; }
+    #sidebar {
+      width: 100%;
+      border-left: none;
+      border-top: 1px solid var(--border);
+      overflow: visible;
+      padding-bottom: 28px;
+    }
+    .wheel { width: 88px; height: 88px; }
+  }
 </style>
 </head>
 <body>
@@ -623,6 +655,8 @@ function setBypass(on) {
   requestRender();
 }
 beforeBtn.addEventListener("pointerdown", () => setBypass(true));
+beforeBtn.addEventListener("contextmenu", e => e.preventDefault());
+beforeBtn.addEventListener("pointercancel", () => setBypass(false));
 window.addEventListener("pointerup", () => { if (bypass) setBypass(false); });
 window.addEventListener("keydown", e => {
   if (e.key.toLowerCase() === "b" && !e.repeat && e.target.tagName !== "INPUT") setBypass(true);
