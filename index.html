@@ -704,7 +704,12 @@ function hueToRgb(deg) {
 
 function renderNow() {
   if (!source) return;
-  if (sourceIsVideo) uploadTexture();
+  if (sourceIsVideo) {
+    uploadTexture();
+    // first frame may not be decoded yet — keep re-rendering until it is,
+    // otherwise the previous texture (e.g. the test image) stays on screen
+    if (video.readyState < 2 && !video.error) requestAnimationFrame(requestRender);
+  }
   gl.uniform1f(U.u_exposure, state.exposure);
   gl.uniform1f(U.u_contrast, state.contrast);
   gl.uniform1f(U.u_sat, state.sat);
@@ -1229,6 +1234,7 @@ function loadFile(file) {
       videoScrub.value = 0;
       updateVideoTime();
       setSource(video, true);
+      video.currentTime = 0.01; // nudge-seek so the first frame actually decodes
     });
     video.addEventListener("seeked", () => { updateVideoTime(); requestRender(); });
   } else {
