@@ -1222,25 +1222,42 @@ viewer.addEventListener("drop", e => {
   if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
 });
 
+function showLoadError(msg) {
+  hint.textContent = msg;
+  hint.style.color = "#ff9d5c";
+  hint.style.display = "";
+}
+
 function loadFile(file) {
   const url = URL.createObjectURL(file);
   hint.style.display = "none";
-  if (file.type.startsWith("video/")) {
+  if (file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm|mkv)$/i.test(file.name)) {
     video.src = url;
-    video.addEventListener("loadeddata", function once() {
-      video.removeEventListener("loadeddata", once);
+    const onFail = () => {
+      video.removeEventListener("loadeddata", onOk);
+      showLoadError(
+        "Couldn't play \"" + file.name + "\" — this browser can't decode it. " +
+        "Drone HEVC/H.265 video doesn't play in Firefox or in Chrome on Windows. " +
+        "Try Safari or Chrome on a Mac, or convert the clip to H.264 first."
+      );
+    };
+    const onOk = () => {
+      video.removeEventListener("error", onFail);
       videoBar.style.display = "flex";
       videoScrub.max = video.duration || 100;
       videoScrub.value = 0;
       updateVideoTime();
       setSource(video, true);
       video.currentTime = 0.01; // nudge-seek so the first frame actually decodes
-    });
+    };
+    video.addEventListener("loadeddata", onOk, { once: true });
+    video.addEventListener("error", onFail, { once: true });
     video.addEventListener("seeked", () => { updateVideoTime(); requestRender(); });
   } else {
     videoBar.style.display = "none";
     const img = new Image();
     img.onload = () => setSource(img, false);
+    img.onerror = () => showLoadError("Couldn't open \"" + file.name + "\" — it doesn't look like an image this browser supports.");
     img.src = url;
   }
 }
