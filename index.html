@@ -654,14 +654,24 @@ function makeTestImage() {
   return c;
 }
 
+// Cap the preview so 4K/5K drone footage fits phone GPU texture limits and
+// stays responsive. Grading math and the exported LUT are resolution-independent.
+const MAX_PREVIEW = Math.min(2048, gl.getParameter(gl.MAX_TEXTURE_SIZE) || 2048);
+const scaleCanvas = document.createElement("canvas");
+const scaleCtx = scaleCanvas.getContext("2d");
+let srcScale = 1;
+
 function setSource(src, isVideo) {
   source = src;
   sourceIsVideo = isVideo;
   const w = isVideo ? src.videoWidth : src.width;
   const h = isVideo ? src.videoHeight : src.height;
-  canvas.width = w;
-  canvas.height = h;
-  gl.viewport(0, 0, w, h);
+  srcScale = Math.min(1, MAX_PREVIEW / Math.max(w, h, 1));
+  canvas.width = Math.max(1, Math.round(w * srcScale));
+  canvas.height = Math.max(1, Math.round(h * srcScale));
+  scaleCanvas.width = canvas.width;
+  scaleCanvas.height = canvas.height;
+  gl.viewport(0, 0, canvas.width, canvas.height);
   uploadTexture();
   requestRender();
 }
@@ -670,7 +680,12 @@ function uploadTexture() {
   if (!source) return;
   if (sourceIsVideo && video.readyState < 2) return;
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
+  if (srcScale < 1) {
+    scaleCtx.drawImage(source, 0, 0, scaleCanvas.width, scaleCanvas.height);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, scaleCanvas);
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
+  }
 }
 
 /* ---------------- rendering ---------------- */
@@ -1232,9 +1247,10 @@ function loadFile(file) {
   const url = URL.createObjectURL(file);
   hint.style.display = "none";
   if (file.type.startsWith("video/") || /\.(mov|mp4|m4v|webm|mkv)$/i.test(file.name)) {
-    video.src = url;
+    let settled = false;
     const onFail = () => {
-      video.removeEventListener("loadeddata", onOk);
+      if (settled) return;
+      settled = true;
       showLoadError(
         "Couldn't play \"" + file.name + "\" — this browser can't decode it. " +
         "Drone HEVC/H.265 video doesn't play in Firefox or in Chrome on Windows. " +
@@ -1242,7 +1258,9 @@ function loadFile(file) {
       );
     };
     const onOk = () => {
-      video.removeEventListener("error", onFail);
+      if (settled) return;
+      settled = true;
+      video.pause();
       videoBar.style.display = "flex";
       videoScrub.max = video.duration || 100;
       videoScrub.value = 0;
@@ -1250,8 +1268,21 @@ function loadFile(file) {
       setSource(video, true);
       video.currentTime = 0.01; // nudge-seek so the first frame actually decodes
     };
-    video.addEventListener("loadeddata", onOk, { once: true });
     video.addEventListener("error", onFail, { once: true });
+    video.preload = "auto";
+    video.src = url;
+    video.load();
+    // Mobile browsers (esp. iOS Safari) don't decode any frame until playback
+    // starts — briefly autoplay muted, grab the first frame, then pause.
+    const p = video.play();
+    if (p && p.catch) p.catch(() => {}); // if autoplay is blocked, the events below still cover us
+    if (video.requestVideoFrameCallback) {
+      video.requestVideoFrameCallback(onOk);                                    // a frame was truly presented
+      video.addEventListener("loadeddata", () => setTimeout(onOk, 300), { once: true }); // fallback if no frame callback comes
+    } else {
+      video.addEventListener("loadeddata", onOk, { once: true });
+    }
+    setTimeout(() => { if (!settled && !video.videoWidth) onFail(); }, 12000);  // nothing at all after 12s
     video.addEventListener("seeked", () => { updateVideoTime(); requestRender(); });
   } else {
     videoBar.style.display = "none";
