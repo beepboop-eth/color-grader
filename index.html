@@ -218,7 +218,12 @@
       <span>Waveform — click to enlarge</span>
       <span class="spacer"></span>
       <span id="clipInfo"></span>
-      <button id="autoBtn" title="Set exposure, contrast and white balance so the image fills the waveform without clipping">Auto balance</button>
+      <select id="autoMode" style="font-size:11px; padding:3px 6px;" title="What kind of footage is this? Changes what Auto balance aims for.">
+        <option value="standard">Standard</option>
+        <option value="aerial">Aerial / daylight</option>
+        <option value="night">Night / concert</option>
+      </select>
+      <button id="autoBtn" title="Set exposure, contrast and white balance to suit the selected footage type">Auto balance</button>
     </div>
     <canvas id="waveform"></canvas>
   </div>
@@ -772,9 +777,11 @@ document.getElementById("waveform").addEventListener("click", () => {
 
 function autoBalance() {
   if (!source) return;
-  sampleCtx.drawImage(sourceIsVideo ? video : source, 0, 0, sampleCanvas.width, sampleCanvas.height);
-  const px = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data;
-  const n = px.length / 4;
+  const mode = document.getElementById("autoMode").value;
+  const sw = sampleCanvas.width, sh = sampleCanvas.height;
+  sampleCtx.drawImage(sourceIsVideo ? video : source, 0, 0, sw, sh);
+  const px = sampleCtx.getImageData(0, 0, sw, sh).data;
+  const n = sw * sh;
   const cols = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     let c = [px[i*4] / 255, px[i*4+1] / 255, px[i*4+2] / 255];
@@ -784,39 +791,88 @@ function autoBalance() {
     }
     cols[i*3] = c[0]; cols[i*3+1] = c[1]; cols[i*3+2] = c[2];
   }
-  const luma = i => 0.2126 * cols[i*3] + 0.7152 * cols[i*3+1] + 0.0722 * cols[i*3+2];
-  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => luma(a) - luma(b));
+  const lumaOf = i => 0.2126 * cols[i*3] + 0.7152 * cols[i*3+1] + 0.0722 * cols[i*3+2];
 
-  // white balance from the brightest 5% (should be neutral-ish); apply gently
-  let r = 0, g = 0, b = 0, cnt = 0;
-  for (let k = Math.floor(n * 0.95); k < n; k++) {
-    const i = order[k];
-    r += cols[i*3]; g += cols[i*3+1]; b += cols[i*3+2]; cnt++;
+  // White balance reference: bright AND low-saturation pixels (clouds, white
+  // buildings, shirts) — excludes blue sky and colored stage lights, which are
+  // bright on purpose. Night mode skips WB entirely: stage lighting isn't a cast.
+  let temp = null, tint = null;
+  if (mode !== "night") {
+    const lumas = new Float32Array(n);
+    for (let i = 0; i < n; i++) lumas[i] = lumaOf(i);
+    const sortedL = Float32Array.from(lumas).sort();
+    const brightThresh = sortedL[Math.floor(n * 0.80)];
+    let r = 0, g = 0, b = 0, cnt = 0;
+    for (let i = 0; i < n; i++) {
+      const cr = cols[i*3], cg = cols[i*3+1], cb = cols[i*3+2];
+      const mx = Math.max(cr, cg, cb), mn = Math.min(cr, cg, cb);
+      if (mx > 0.05 && (mx - mn) / mx <= 0.3 && lumas[i] >= brightThresh) {
+        r += cr; g += cg; b += cb; cnt++;
+      }
+    }
+    if (cnt >= n * 0.005) { // need a real neutral reference, else leave WB alone
+      r /= cnt; g /= cnt; b /= cnt;
+      const SOFTEN = 0.6;
+      temp = r + b > 0.05 ? Math.max(-1, Math.min(1, (b - r) / (0.25 * (r + b)) * SOFTEN)) : 0;
+      const r2 = r * (1 + temp * 0.25), b2 = b * (1 - temp * 0.25);
+      tint = g > 0.05 ? Math.max(-1, Math.min(1, ((r2 + b2) / 2 - g) / (0.20 * g) * SOFTEN)) : 0;
+    }
   }
-  r /= cnt; g /= cnt; b /= cnt;
-  const SOFTEN = 0.6;
-  let temp = 0, tint = 0;
-  if (r + b > 0.05) temp = Math.max(-1, Math.min(1, (b - r) / (0.25 * (r + b)) * SOFTEN));
-  const r2 = r * (1 + temp * 0.25), b2 = b * (1 - temp * 0.25);
-  if (g > 0.05) tint = Math.max(-1, Math.min(1, ((r2 + b2) / 2 - g) / (0.20 * g) * SOFTEN));
 
-  // percentiles of white-balanced luma
-  const wbLuma = i => 0.2126 * cols[i*3] * (1 + temp * 0.25)
-                    + 0.7152 * cols[i*3+1] * (1 + tint * 0.20)
-                    + 0.0722 * cols[i*3+2] * (1 - temp * 0.25);
-  const pLo = wbLuma(order[Math.floor(n * 0.01)]);
-  const pHi = wbLuma(order[Math.floor(n * 0.99)]);
-  const d = Math.max(pHi - pLo, 0.01);
+  // luma after the white balance that will actually be in effect
+  const effTemp = temp !== null ? temp : state.temp;
+  const effTint = tint !== null ? tint : state.tint;
+  const all = new Float32Array(n);
+  const ground = [];
+  for (let i = 0; i < n; i++) {
+    const v = 0.2126 * cols[i*3] * (1 + effTemp * 0.25)
+            + 0.7152 * cols[i*3+1] * (1 + effTint * 0.20)
+            + 0.0722 * cols[i*3+2] * (1 - effTemp * 0.25);
+    all[i] = v;
+    if (Math.floor(i / sw) >= sh / 2) ground.push(v); // lower half of frame
+  }
+  all.sort();
+  const groundS = Float32Array.from(ground).sort();
+  const pct = (arr, q) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
 
   // solve exposure E and contrast k so that after c*E then (c-0.5)*k+0.5,
-  // pLo lands at 0.02 and pHi at 0.97 (see pipeline order in grade())
-  const E = 0.5 / Math.max(pLo + 0.5053 * d, 0.02);
-  const k = 0.95 / (E * d);
+  // pLo lands at tLo and pHi at tHi (see pipeline order in grade())
+  const solve = (pLo, pHi, tLo, tHi) => {
+    const d = Math.max(pHi - pLo, 0.01), span = tHi - tLo;
+    const E = 0.5 / Math.max(pLo + (0.5 - tLo) * d / span, 0.02);
+    return { E, k: span / (E * d) };
+  };
 
-  state.temp = Math.round(temp * 100) / 100;
-  state.tint = Math.round(tint * 100) / 100;
+  let E, k, kMax = 1.8;
+  if (mode === "standard") {
+    ({ E, k } = solve(pct(all, 0.01), pct(all, 0.99), 0.02, 0.97));
+  } else if (mode === "aerial") {
+    // expose for the ground, protect the sky, stronger dehaze black point,
+    // capped contrast so smooth sky gradients don't band
+    kMax = 1.5;
+    const pLo = pct(groundS, 0.005), pHi = pct(all, 0.995);
+    ({ E, k } = solve(pLo, pHi, 0.01, 0.97));
+    k = Math.min(k, kMax);
+    const gMid = pct(groundS, 0.5);
+    if ((gMid * E - 0.5) * k + 0.5 < 0.30) {          // ground too dark: lift it
+      E = (0.5 + (0.33 - 0.5) / k) / Math.max(gMid, 0.02);
+      if ((pHi * E - 0.5) * k + 0.5 > 0.995)           // then re-protect the sky
+        k = 0.47 / Math.max(pHi * E - 0.5, 0.05);
+    }
+  } else { // night / concert: reveal shadow detail, keep the mood, let lights clip
+    E = 0.06 / Math.max(pct(all, 0.10), 0.005);        // shadow detail lift
+    E = Math.min(E, 0.35 / Math.max(pct(all, 0.5), 0.01));   // but night stays night
+    E = Math.min(E, 1.15 / Math.max(pct(all, 0.995), 0.05)); // and lights only clip a little
+    E = Math.max(Math.pow(2, -0.5), Math.min(4, E));
+    k = 1;
+  }
+
+  if (temp !== null) {
+    state.temp = Math.round(temp * 100) / 100;
+    state.tint = Math.round(tint * 100) / 100;
+  }
   state.exposure = Math.round(Math.max(-2, Math.min(2, Math.log2(E))) * 100) / 100;
-  state.contrast = Math.round(Math.max(0.4, Math.min(1.8, k)) * 100) / 100;
+  state.contrast = Math.round(Math.max(0.4, Math.min(kMax, k)) * 100) / 100;
   syncUI();
   requestRender();
 }
