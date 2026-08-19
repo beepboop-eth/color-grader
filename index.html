@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LUT Builder</title>
+<style>
+  :root {
+    --bg: #16181c;
+    --panel: #1f2229;
+    --panel2: #262a33;
+    --text: #d8dbe2;
+    --muted: #8a8f9c;
+    --accent: #4c9aff;
+    --border: #32363f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    overflow: hidden;
+  }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  #toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  #toolbar .title { font-weight: 600; font-size: 14px; margin-right: 6px; }
+  button {
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.1); }
+  input[type="text"] {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; font: inherit; width: 150px;
+  }
+  select {
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; font: inherit;
+  }
+  .spacer { flex: 1; }
+
+  #viewer {
+    flex: 1; min-height: 0;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+    padding: 16px;
+  }
+  #gl {
+    max-width: 100%; max-height: 100%;
+    border-radius: 4px;
+    box-shadow: 0 4px 24px rgba(0,0,0,.45);
+  }
+  #viewer.dragover::after {
+    content: "Drop to load";
+    position: absolute; inset: 12px;
+    border: 2px dashed var(--accent); border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; color: var(--accent);
+    background: rgba(20,24,30,.7);
+  }
+  #hint {
+    position: absolute; bottom: 10px; left: 0; right: 0;
+    text-align: center; color: var(--muted); font-size: 12px;
+    pointer-events: none;
+  }
+  #beforeBadge {
+    position: absolute; top: 24px; left: 24px;
+    background: rgba(0,0,0,.65); color: #fff;
+    padding: 4px 10px; border-radius: 5px; font-weight: 600;
+    display: none;
+  }
+
+  #videoBar {
+    display: none; align-items: center; gap: 10px;
+    padding: 8px 16px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+  }
+  #videoBar input[type="range"] { flex: 1; }
+  #videoTime { color: var(--muted); min-width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  #waveWrap {
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    padding: 8px 16px 12px;
+  }
+  #waveWrap .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+  #waveform { width: 100%; height: 110px; display: block; background: #101216; border-radius: 4px; }
+
+  #sidebar {
+    width: 300px; flex-shrink: 0;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 14px;
+  }
+  .group { margin-bottom: 18px; }
+  .group h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); margin-bottom: 10px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .group h3 .mini { font-size: 10px; text-transform: none; letter-spacing: 0; cursor: pointer; color: var(--muted); border: none; background: none; padding: 2px 4px; }
+  .group h3 .mini:hover { color: var(--text); }
+
+  .slider-row { display: grid; grid-template-columns: 82px 1fr 40px; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .slider-row label { color: var(--text); }
+  .slider-row .val { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  input[type="range"] { accent-color: var(--accent); }
+
+  #wheels { display: flex; justify-content: space-between; gap: 6px; }
+  .wheel-block { text-align: center; flex: 1; }
+  .wheel-block .wname { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .wheel {
+    width: 78px; height: 78px; margin: 0 auto;
+    border-radius: 50%;
+    position: relative;
+    cursor: crosshair;
+    border: 1px solid var(--border);
+    background:
+      radial-gradient(circle, rgba(140,140,140,.9) 0%, rgba(140,140,140,0) 72%),
+      conic-gradient(#f55 0deg, #ff5 60deg, #5f5 120deg, #5ff 180deg, #55f 240deg, #f5f 300deg, #f55 360deg);
+    filter: saturate(.65) brightness(.85);
+  }
+  .wheel .puck {
+    position: absolute; width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff; border: 2px solid #111;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,.6);
+  }
+  .wheel-block .wreset { margin-top: 6px; font-size: 10px; padding: 2px 8px; }
+</style>
+</head>
+<body>
+
+<div id="main">
+  <div id="toolbar">
+    <span class="title">LUT Builder</span>
+    <button id="openBtn">Open photo / video…</button>
+    <input type="file" id="fileInput" accept="image/*,video/*" hidden>
+    <button id="beforeBtn" title="Hold to see the original (or hold B key)">Hold: Before</button>
+    <button id="resetBtn">Reset all</button>
+    <span class="spacer"></span>
+    <input type="text" id="lookName" placeholder="Look name" value="My Look">
+    <button id="saveLookBtn">Save look</button>
+    <select id="presetSelect"><option value="">Saved looks…</option></select>
+    <button id="exportBtn" class="primary">Export .cube</button>
+  </div>
+
+  <div id="viewer">
+    <canvas id="gl"></canvas>
+    <div id="beforeBadge">ORIGINAL</div>
+    <div id="hint">Drag &amp; drop a photo or video from your drone — showing built-in test image</div>
+  </div>
+
+  <div id="videoBar">
+    <button id="stepBack" title="Back 1s">−1s</button>
+    <input type="range" id="videoScrub" min="0" max="100" step="0.01" value="0">
+    <button id="stepFwd" title="Forward 1s">+1s</button>
+    <span id="videoTime">0:00 / 0:00</span>
+  </div>
+
+  <div id="waveWrap">
+    <div class="label">Waveform (brightness across the image — left to right)</div>
+    <canvas id="waveform"></canvas>
+  </div>
+</div>
+
+<div id="sidebar">
+  <div class="group">
+    <h3>Basic <button class="mini" data-resetgroup="basic">reset</button></h3>
+    <div class="slider-row">
+      <label>Exposure</label>
+      <input type="range" id="exposure" min="-2" max="2" step="0.01" value="0">
+      <span class="val" id="exposureVal">0.00</span>
+    </div>
+    <div class="slider-row">
+      <label>Contrast</label>
+      <input type="range" id="contrast" min="0.4" max="1.8" step="0.01" value="1">
+      <span class="val" id="contrastVal">1.00</span>
+    </div>
+    <div class="slider-row">
+      <label>Saturation</label>
+      <input type="range" id="sat" min="0" max="2" step="0.01" value="1">
+      <span class="val" id="satVal">1.00</span>
+    </div>
+  </div>
+
+  <div class="group">
+    <h3>White balance <button class="mini" data-resetgroup="wb">reset</button></h3>
+    <div class="slider-row">
+      <label>Temperature</label>
+      <input type="range" id="temp" min="-1" max="1" step="0.01" value="0">
+      <span class="val" id="tempVal">0.00</span>
+    </div>
+    <div class="slider-row">
+      <label>Tint</label>
+      <input type="range" id="tint" min="-1" max="1" step="0.01" value="0">
+      <span class="val" id="tintVal">0.00</span>
+    </div>
+  </div>
+
+  <div class="group">
+    <h3>Color wheels</h3>
+    <div id="wheels">
+      <div class="wheel-block">
+        <div class="wname">Shadows</div>
+        <div class="wheel" id="wheelLift"><div class="puck"></div></div>
+        <button class="wreset" data-wheel="lift">reset</button>
+      </div>
+      <div class="wheel-block">
+        <div class="wname">Midtones</div>
+        <div class="wheel" id="wheelGamma"><div class="puck"></div></div>
+        <button class="wreset" data-wheel="gamma">reset</button>
+      </div>
+      <div class="wheel-block">
+        <div class="wname">Highlights</div>
+        <div class="wheel" id="wheelGain"><div class="puck"></div></div>
+        <button class="wreset" data-wheel="gain">reset</button>
+      </div>
+    </div>
+    <p style="color:var(--muted); font-size:11px; margin-top:10px;">
+      Drag inside a wheel to tint that part of the image toward a color. Center = no tint.
+    </p>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ---------------- state ---------------- */
+
+const DEFAULTS = {
+  exposure: 0, contrast: 1, sat: 1, temp: 0, tint: 0,
+  lift: [0, 0], gamma: [0, 0], gain: [0, 0]   // wheel puck positions, x/y in [-1,1]
+};
+let state = JSON.parse(JSON.stringify(DEFAULTS));
+let bypass = false;
+
+// How strongly each wheel tints its range
+const WHEEL_SCALE = { lift: 0.20, gamma: 0.45, gain: 0.35 };
+
+/* ---------------- WebGL setup ---------------- */
+
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true });
+if (!gl) {
+  document.getElementById("viewer").innerHTML =
+    "<p style='color:#f66'>Sorry — this browser doesn't support WebGL, which the live preview needs.</p>";
+  throw new Error("no webgl");
+}
+
+const VERT = `
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+// NOTE: gradeJS() below must stay mathematically identical to this shader —
+// the .cube export uses the JS version, so any drift breaks the "export
+// matches preview" guarantee.
+const FRAG = `
+precision highp float;
+uniform sampler2D u_tex;
+uniform float u_exposure, u_contrast, u_sat, u_temp, u_tint, u_bypass;
+uniform vec3 u_lift, u_gamma, u_gain;
+varying vec2 v_uv;
+
+vec3 grade(vec3 c) {
+  // white balance
+  c.r *= 1.0 + u_temp * 0.25;
+  c.b *= 1.0 - u_temp * 0.25;
+  c.g *= 1.0 + u_tint * 0.20;
+  // exposure (stops)
+  c *= exp2(u_exposure);
+  // contrast around mid-gray
+  c = (c - 0.5) * u_contrast + 0.5;
+  // wheels: gain -> lift -> gamma
+  c = c * (1.0 + u_gain);
+  c = c + u_lift * (1.0 - c);
+  c = clamp(c, 0.0, 1.0);
+  c = pow(c, 1.0 / max(vec3(1.0) + u_gamma, 0.05));
+  // saturation
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(l), c, u_sat);
+  return clamp(c, 0.0, 1.0);
+}
+
+void main() {
+  vec3 src = texture2D(u_tex, v_uv).rgb;
+  vec3 outc = u_bypass > 0.5 ? src : grade(src);
+  gl_FragColor = vec4(outc, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+  throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, "a_pos");
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const name of ["u_exposure","u_contrast","u_sat","u_temp","u_tint","u_bypass","u_lift","u_gamma","u_gain"])
+  U[name] = gl.getUniformLocation(prog, name);
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+/* ---------------- source media ---------------- */
+
+let source = null;        // image, video element, or canvas
+let sourceIsVideo = false;
+const video = document.createElement("video");
+video.muted = true;
+video.playsInline = true;
+
+function makeTestImage() {
+  const c = document.createElement("canvas");
+  c.width = 1280; c.height = 720;
+  const x = c.getContext("2d");
+  // sky
+  const sky = x.createLinearGradient(0, 0, 0, 430);
+  sky.addColorStop(0, "#3f6fa8");
+  sky.addColorStop(1, "#cfd8de");
+  x.fillStyle = sky; x.fillRect(0, 0, 1280, 430);
+  // ground
+  const gnd = x.createLinearGradient(0, 430, 0, 720);
+  gnd.addColorStop(0, "#6d7a52");
+  gnd.addColorStop(1, "#3c4230");
+  x.fillStyle = gnd; x.fillRect(0, 430, 1280, 290);
+  // sun glow
+  const sun = x.createRadialGradient(1020, 120, 10, 1020, 120, 180);
+  sun.addColorStop(0, "rgba(255,240,210,0.95)");
+  sun.addColorStop(1, "rgba(255,240,210,0)");
+  x.fillStyle = sun; x.fillRect(0, 0, 1280, 430);
+  // gray ramp
+  for (let i = 0; i < 16; i++) {
+    const v = Math.round(i * 255 / 15);
+    x.fillStyle = `rgb(${v},${v},${v})`;
+    x.fillRect(40 + i * 45, 560, 45, 60);
+  }
+  // color bars
+  const bars = ["#c33","#c93","#cc3","#3c3","#3cc","#33c","#c3c","#888"];
+  bars.forEach((col, i) => {
+    x.fillStyle = col;
+    x.fillRect(40 + i * 90, 640, 90, 50);
+  });
+  x.fillStyle = "rgba(255,255,255,.85)";
+  x.font = "600 22px sans-serif";
+  x.fillText("Built-in test image — drop your own footage here", 40, 60);
+  return c;
+}
+
+function setSource(src, isVideo) {
+  source = src;
+  sourceIsVideo = isVideo;
+  const w = isVideo ? src.videoWidth : src.width;
+  const h = isVideo ? src.videoHeight : src.height;
+  canvas.width = w;
+  canvas.height = h;
+  gl.viewport(0, 0, w, h);
+  uploadTexture();
+  requestRender();
+}
+
+function uploadTexture() {
+  if (!source) return;
+  if (sourceIsVideo && video.readyState < 2) return;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
+}
+
+/* ---------------- rendering ---------------- */
+
+let renderQueued = false;
+function requestRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; renderNow(); });
+}
+
+function wheelOffset(pos, scale) {
+  const [x, y] = pos;
+  const mag = Math.min(1, Math.hypot(x, y));
+  if (mag < 1e-4) return [0, 0, 0];
+  // angle measured clockwise from the top, matching the CSS conic gradient
+  const deg = (Math.atan2(x, -y) * 180 / Math.PI + 360) % 360;
+  const rgb = hueToRgb(deg);
+  const avg = (rgb[0] + rgb[1] + rgb[2]) / 3;
+  return rgb.map(v => (v - avg) * mag * scale);
+}
+
+function hueToRgb(deg) {
+  const h = deg / 60;
+  const f = i => {
+    const k = (i + h) % 6;
+    return 1 - Math.max(0, Math.min(k, 4 - k, 1));
+  };
+  return [f(5), f(3), f(1)];
+}
+
+function renderNow() {
+  if (!source) return;
+  if (sourceIsVideo) uploadTexture();
+  gl.uniform1f(U.u_exposure, state.exposure);
+  gl.uniform1f(U.u_contrast, state.contrast);
+  gl.uniform1f(U.u_sat, state.sat);
+  gl.uniform1f(U.u_temp, state.temp);
+  gl.uniform1f(U.u_tint, state.tint);
+  gl.uniform1f(U.u_bypass, bypass ? 1 : 0);
+  gl.uniform3fv(U.u_lift, wheelOffset(state.lift, WHEEL_SCALE.lift));
+  gl.uniform3fv(U.u_gamma, wheelOffset(state.gamma, WHEEL_SCALE.gamma));
+  gl.uniform3fv(U.u_gain, wheelOffset(state.gain, WHEEL_SCALE.gain));
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  drawWaveform();
+}
+
+/* ---------------- waveform ---------------- */
+
+const waveCanvas = document.getElementById("waveform");
+const waveCtx = waveCanvas.getContext("2d");
+const sampleCanvas = document.createElement("canvas");
+sampleCanvas.width = 240; sampleCanvas.height = 135;
+const sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently: true });
+
+function drawWaveform() {
+  const W = waveCanvas.clientWidth, H = 110;
+  if (waveCanvas.width !== W) waveCanvas.width = W;
+  if (waveCanvas.height !== H) waveCanvas.height = H;
+  if (!W) return;
+  sampleCtx.drawImage(canvas, 0, 0, sampleCanvas.width, sampleCanvas.height);
+  const data = sampleCtx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data;
+  waveCtx.fillStyle = "#101216";
+  waveCtx.fillRect(0, 0, W, H);
+  waveCtx.fillStyle = "rgba(120,220,140,0.16)";
+  const sw = sampleCanvas.width, sh = sampleCanvas.height;
+  for (let x = 0; x < sw; x++) {
+    const px = x / sw * W;
+    for (let y = 0; y < sh; y++) {
+      const i = (y * sw + x) * 4;
+      const luma = 0.2126 * data[i] + 0.7152 * data[i+1] + 0.0722 * data[i+2];
+      waveCtx.fillRect(px, (1 - luma / 255) * (H - 2), Math.max(1, W / sw), 2);
+    }
+  }
+}
+
+/* ---------------- the same grade in JS (for .cube export) ---------------- */
+
+function gradeJS(r, g, b) {
+  const lift = wheelOffset(state.lift, WHEEL_SCALE.lift);
+  const gamma = wheelOffset(state.gamma, WHEEL_SCALE.gamma);
+  const gain = wheelOffset(state.gain, WHEEL_SCALE.gain);
+  let c = [r, g, b];
+  // white balance
+  c[0] *= 1 + state.temp * 0.25;
+  c[2] *= 1 - state.temp * 0.25;
+  c[1] *= 1 + state.tint * 0.20;
+  // exposure
+  const ex = Math.pow(2, state.exposure);
+  c = c.map(v => v * ex);
+  // contrast
+  c = c.map(v => (v - 0.5) * state.contrast + 0.5);
+  // wheels
+  c = c.map((v, i) => v * (1 + gain[i]));
+  c = c.map((v, i) => v + lift[i] * (1 - v));
+  c = c.map(v => Math.min(1, Math.max(0, v)));
+  c = c.map((v, i) => Math.pow(v, 1 / Math.max(1 + gamma[i], 0.05)));
+  // saturation
+  const l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  c = c.map(v => l + (v - l) * state.sat);
+  return c.map(v => Math.min(1, Math.max(0, v)));
+}
+
+/* ---------------- .cube export ---------------- */
+
+const CUBE_SIZE = 33;
+
+function buildCubeText() {
+  const name = (document.getElementById("lookName").value || "My Look").trim();
+  const lines = [
+    `TITLE "${name.replace(/"/g, "'")}"`,
+    `LUT_3D_SIZE ${CUBE_SIZE}`,
+    `DOMAIN_MIN 0.0 0.0 0.0`,
+    `DOMAIN_MAX 1.0 1.0 1.0`,
+  ];
+  const n = CUBE_SIZE - 1;
+  for (let b = 0; b < CUBE_SIZE; b++)
+    for (let g = 0; g < CUBE_SIZE; g++)
+      for (let r = 0; r < CUBE_SIZE; r++) {
+        const [or_, og, ob] = gradeJS(r / n, g / n, b / n);
+        lines.push(`${or_.toFixed(6)} ${og.toFixed(6)} ${ob.toFixed(6)}`);
+      }
+  return lines.join("\n") + "\n";
+}
+
+function exportCube() {
+  const name = (document.getElementById("lookName").value || "My Look").trim();
+  const blob = new Blob([buildCubeText()], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name.replace(/[^\w\- ]+/g, "").replace(/\s+/g, "-").toLowerCase() + ".cube";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---------------- controls ---------------- */
+
+const SLIDERS = ["exposure", "contrast", "sat", "temp", "tint"];
+
+function syncUI() {
+  for (const id of SLIDERS) {
+    document.getElementById(id).value = state[id];
+    document.getElementById(id + "Val").textContent = Number(state[id]).toFixed(2);
+  }
+  for (const w of ["lift", "gamma", "gain"]) positionPuck(w);
+}
+
+for (const id of SLIDERS) {
+  document.getElementById(id).addEventListener("input", e => {
+    state[id] = parseFloat(e.target.value);
+    document.getElementById(id + "Val").textContent = state[id].toFixed(2);
+    requestRender();
+  });
+}
+
+const GROUP_KEYS = { basic: ["exposure", "contrast", "sat"], wb: ["temp", "tint"] };
+document.querySelectorAll("[data-resetgroup]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    for (const k of GROUP_KEYS[btn.dataset.resetgroup]) state[k] = DEFAULTS[k];
+    syncUI(); requestRender();
+  });
+});
+
+document.getElementById("resetBtn").addEventListener("click", () => {
+  state = JSON.parse(JSON.stringify(DEFAULTS));
+  syncUI(); requestRender();
+});
+
+/* wheels */
+const WHEEL_IDS = { lift: "wheelLift", gamma: "wheelGamma", gain: "wheelGain" };
+
+function positionPuck(key) {
+  const el = document.getElementById(WHEEL_IDS[key]);
+  const puck = el.querySelector(".puck");
+  const r = el.clientWidth / 2;
+  const [x, y] = state[key];
+  puck.style.left = 50 + x * 46 + "%";
+  puck.style.top = 50 + y * 46 + "%";
+}
+
+for (const [key, id] of Object.entries(WHEEL_IDS)) {
+  const el = document.getElementById(id);
+  let dragging = false;
+  const update = e => {
+    const rect = el.getBoundingClientRect();
+    let x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    let y = ((e.clientY - rect.top) / rect.height) * 2 - 1;
+    const m = Math.hypot(x, y);
+    if (m > 1) { x /= m; y /= m; }
+    state[key] = [x, y];
+    positionPuck(key);
+    requestRender();
+  };
+  el.addEventListener("pointerdown", e => { dragging = true; el.setPointerCapture(e.pointerId); update(e); });
+  el.addEventListener("pointermove", e => { if (dragging) update(e); });
+  el.addEventListener("pointerup", () => { dragging = false; });
+}
+
+document.querySelectorAll(".wreset").forEach(btn => {
+  btn.addEventListener("click", () => {
+    state[btn.dataset.wheel] = [0, 0];
+    positionPuck(btn.dataset.wheel);
+    requestRender();
+  });
+});
+
+/* before/after */
+const beforeBtn = document.getElementById("beforeBtn");
+const beforeBadge = document.getElementById("beforeBadge");
+function setBypass(on) {
+  bypass = on;
+  beforeBadge.style.display = on ? "block" : "none";
+  requestRender();
+}
+beforeBtn.addEventListener("pointerdown", () => setBypass(true));
+window.addEventListener("pointerup", () => { if (bypass) setBypass(false); });
+window.addEventListener("keydown", e => {
+  if (e.key.toLowerCase() === "b" && !e.repeat && e.target.tagName !== "INPUT") setBypass(true);
+});
+window.addEventListener("keyup", e => {
+  if (e.key.toLowerCase() === "b") setBypass(false);
+});
+
+/* ---------------- file loading ---------------- */
+
+const viewer = document.getElementById("viewer");
+const hint = document.getElementById("hint");
+const videoBar = document.getElementById("videoBar");
+const videoScrub = document.getElementById("videoScrub");
+const videoTime = document.getElementById("videoTime");
+
+document.getElementById("openBtn").addEventListener("click", () =>
+  document.getElementById("fileInput").click());
+document.getElementById("fileInput").addEventListener("change", e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+viewer.addEventListener("dragover", e => { e.preventDefault(); viewer.classList.add("dragover"); });
+viewer.addEventListener("dragleave", () => viewer.classList.remove("dragover"));
+viewer.addEventListener("drop", e => {
+  e.preventDefault();
+  viewer.classList.remove("dragover");
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+
+function loadFile(file) {
+  const url = URL.createObjectURL(file);
+  hint.style.display = "none";
+  if (file.type.startsWith("video/")) {
+    video.src = url;
+    video.addEventListener("loadeddata", function once() {
+      video.removeEventListener("loadeddata", once);
+      videoBar.style.display = "flex";
+      videoScrub.max = video.duration || 100;
+      videoScrub.value = 0;
+      updateVideoTime();
+      setSource(video, true);
+    });
+    video.addEventListener("seeked", () => { updateVideoTime(); requestRender(); });
+  } else {
+    videoBar.style.display = "none";
+    const img = new Image();
+    img.onload = () => setSource(img, false);
+    img.src = url;
+  }
+}
+
+function fmtTime(s) {
+  s = Math.max(0, s || 0);
+  return Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+}
+function updateVideoTime() {
+  videoTime.textContent = fmtTime(video.currentTime) + " / " + fmtTime(video.duration);
+}
+videoScrub.addEventListener("input", () => { video.currentTime = parseFloat(videoScrub.value); });
+document.getElementById("stepBack").addEventListener("click", () => {
+  video.currentTime = Math.max(0, video.currentTime - 1);
+  videoScrub.value = video.currentTime;
+});
+document.getElementById("stepFwd").addEventListener("click", () => {
+  video.currentTime = Math.min(video.duration, video.currentTime + 1);
+  videoScrub.value = video.currentTime;
+});
+
+/* ---------------- saved looks (localStorage) ---------------- */
+
+const LS_KEY = "lutbuilder.looks";
+const presetSelect = document.getElementById("presetSelect");
+
+function loadLooks() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; }
+  catch { return {}; }
+}
+function refreshPresetList() {
+  const looks = loadLooks();
+  presetSelect.innerHTML = "<option value=''>Saved looks…</option>";
+  for (const name of Object.keys(looks).sort()) {
+    const opt = document.createElement("option");
+    opt.value = name; opt.textContent = name;
+    presetSelect.appendChild(opt);
+  }
+}
+document.getElementById("saveLookBtn").addEventListener("click", () => {
+  const name = (document.getElementById("lookName").value || "My Look").trim();
+  const looks = loadLooks();
+  looks[name] = state;
+  localStorage.setItem(LS_KEY, JSON.stringify(looks));
+  refreshPresetList();
+  presetSelect.value = name;
+});
+presetSelect.addEventListener("change", () => {
+  const looks = loadLooks();
+  if (looks[presetSelect.value]) {
+    state = JSON.parse(JSON.stringify(looks[presetSelect.value]));
+    document.getElementById("lookName").value = presetSelect.value;
+    syncUI(); requestRender();
+  }
+});
+
+document.getElementById("exportBtn").addEventListener("click", exportCube);
+
+window.addEventListener("resize", requestRender);
+
+/* ---------------- self-test (dev only, run from console) ----------------
+   Verifies the JS grade math matches the GPU shader within rounding error,
+   which is what guarantees the exported .cube matches the on-screen preview. */
+window.__selfTest = function () {
+  renderNow();
+  const w = canvas.width, h = canvas.height;
+  const src = document.createElement("canvas");
+  src.width = w; src.height = h;
+  src.getContext("2d").drawImage(sourceIsVideo ? video : source, 0, 0, w, h);
+  const sctx = src.getContext("2d");
+  const pts = [[w>>2, h>>2], [w>>1, h>>1], [3*w>>2, 3*h>>2], [w>>3, 3*h>>2]];
+  const px = new Uint8Array(4);
+  let maxErr = 0;
+  for (const [x, y] of pts) {
+    const s = sctx.getImageData(x, y, 1, 1).data;
+    const expected = gradeJS(s[0]/255, s[1]/255, s[2]/255).map(v => v * 255);
+    gl.readPixels(x, h - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    for (let i = 0; i < 3; i++) maxErr = Math.max(maxErr, Math.abs(px[i] - expected[i]));
+  }
+  return { maxErrOutOf255: maxErr, pass: maxErr <= 3 };
+};
+
+/* ---------------- go ---------------- */
+
+setSource(makeTestImage(), false);
+syncUI();
+refreshPresetList();
+</script>
+</body>
+</html>
