@@ -452,6 +452,15 @@ const BUNDLED_LUTS = [
   { id: "xpro-slide",   label: "X-Pro Slide — cross-processed punch" },
   { id: "hp5-bw",       label: "HP5 — black & white" },
 ];
+// user-made drone LUTs, bundled as 33^3 .cube files in luts/drone/
+const DRONE_LUTS = [
+  { id: "hdr-log-correction",      label: "HDR LOG Correction" },
+  { id: "midtone-contrast",        label: "Midtone Contrast" },
+  { id: "soft-warming-cinematic",  label: "Soft Warming Cinematic" },
+  { id: "teal-orange-basic",       label: "Teal+Orange Basic" },
+  { id: "teal-orange-satcontrast", label: "Teal+Orange SatContrast" },
+  { id: "xdeepgreen",              label: "XDeepGreen" },
+];
 let currentLut = null; // { value, label, data: Uint8Array(33^3*3) }
 
 const lutTex = gl.createTexture();
@@ -1035,6 +1044,14 @@ function rebuildLutSelect(importedRecs) {
     gb.appendChild(o);
   }
   lutSelect.appendChild(gb);
+  const gd = document.createElement("optgroup");
+  gd.label = "Drone LUTs";
+  for (const l of DRONE_LUTS) {
+    const o = document.createElement("option");
+    o.value = "d:" + l.id; o.textContent = l.label;
+    gd.appendChild(o);
+  }
+  lutSelect.appendChild(gd);
   if (importedRecs.length) {
     const gi = document.createElement("optgroup");
     gi.label = "Imported";
@@ -1076,6 +1093,15 @@ async function activateLutValue(value) {
         bundledCache.set(id, resampleTo33(haldFromImage(img)));
       }
       setLut({ value, label: meta.label, data: bundledCache.get(id) });
+    } else if (value.startsWith("d:")) {
+      const id = value.slice(2);
+      const meta = DRONE_LUTS.find(l => l.id === id);
+      if (!bundledCache.has(value)) {
+        const res = await fetch("luts/drone/" + id + ".cube");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        bundledCache.set(value, resampleTo33(parseCubeText(await res.text())));
+      }
+      setLut({ value, label: meta.label, data: bundledCache.get(value) });
     } else if (value.startsWith("i:")) {
       const recs = await idbAllLuts();
       const rec = recs.find(r => r.key === value.slice(2));
@@ -1084,7 +1110,7 @@ async function activateLutValue(value) {
     }
   } catch (err) {
     lutStatus.textContent = "Could not load: " + err.message +
-      (location.protocol === "file:" && value.startsWith("b:")
+      (location.protocol === "file:" && /^[bd]:/.test(value)
         ? " (bundled looks need the hosted version — imports still work)" : "");
     lutSelect.value = "none";
     setLut(null);

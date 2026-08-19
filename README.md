@@ -12,7 +12,7 @@ Everything runs locally in the browser — footage never leaves your machine.
 
 - Drag & drop a photo or video (with frame scrubbing) as the grading reference
 - Exposure, contrast, saturation, white balance, and shadows/midtones/highlights color wheels
-- Bundled film-simulation base looks + import your own `.cube` or HaldCLUT `.png` LUTs (single files or whole folders; imports are stored in the browser)
+- Bundled film-simulation base looks, a set of custom drone LUTs (`luts/drone/`), + import your own `.cube` or HaldCLUT `.png` LUTs (single files or whole folders; imports are stored in the browser)
 - LUT strength control, before/after toggle, luma waveform
 - Export the full grade (base LUT + adjustments) as a standard 33-point `.cube`
 
